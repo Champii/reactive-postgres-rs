@@ -1,5 +1,5 @@
 mod watcher;
-pub use watcher::{watch, Event};
+pub use watcher::{watch, Event, WatchableSql};
 
 #[cfg(test)]
 mod tests {

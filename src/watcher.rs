@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use derive_new::new;
 use futures::StreamExt;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -106,7 +107,7 @@ where
 
         self.setup_query_result_table().await;
         self.get_query_result_columns().await;
-        self.collect_source_tables().await;
+        self.collect_source_tables();
         self.create_triggers().await;
     }
 
@@ -128,7 +129,7 @@ where
         columns
     }
 
-    pub async fn collect_source_tables(&mut self) {
+    pub fn collect_source_tables(&mut self) {
         use sqlparser::dialect::PostgreSqlDialect;
         let sql_ast =
             sqlparser::parser::Parser::parse_sql(&PostgreSqlDialect {}, &self.query).unwrap();
@@ -328,14 +329,12 @@ where
     pub async fn handle_event(&mut self) {
         self.update_result_table().await;
     }
-
-    pub fn stop(&mut self) {}
 }
 
 pub async fn watch<T>(
     query: &str,
     handler: Box<dyn Fn(Vec<Event<T>>) + Sync + Send + 'static>,
-) -> (Watcher<T>, JoinHandle<()>)
+) -> JoinHandle<()>
 where
     T: Debug + Send + Sync + 'static + DeserializeOwned,
 {
@@ -349,9 +348,7 @@ where
         client,
     ))));
 
-    let join_handle = watcher.start(connection).await;
-
-    (watcher, join_handle)
+    watcher.start(connection).await
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -359,4 +356,23 @@ pub enum Event<T> {
     Insert(T),
     Update(T),
     Delete(i32),
+}
+
+#[async_trait]
+pub trait WatchableSql<F> {
+    async fn watch<T>(&self, handler: F) -> JoinHandle<()>
+    where
+        F: Fn(Vec<Event<T>>) + Sync + Send + 'static,
+        T: Debug + Send + Sync + 'static + DeserializeOwned;
+}
+
+#[async_trait]
+impl<F> WatchableSql<F> for str {
+    async fn watch<T>(&self, handler: F) -> JoinHandle<()>
+    where
+        F: Fn(Vec<Event<T>>) + Sync + Send + 'static,
+        T: Debug + Send + Sync + 'static + DeserializeOwned,
+    {
+        watch(self, Box::new(handler)).await
+    }
 }

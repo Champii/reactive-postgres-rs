@@ -18,22 +18,10 @@ struct Foo {
 
 #[tokio::main]
 async fn main() {
-    let cb = |events| {
-        for event in events {
-            match event {
-                Event::Insert(row) => println!("insert: {:?}", row),
-                Event::Update(row) => println!("change: {:?}", row),
-                Event::Delete(id) => println!("delete: {:?}", id),
-            }
-        }
-    };
-
-    let (_, join_handle) =
-        watch::<Foo>(
-	    "SELECT * from foo where id < 10",
-	    Box::new(cb),
-	).await;
-
-    join_handle.await.unwrap();
+    "SELECT * from foo where id < 10"
+        .watch::<Foo>(|event| println!("{:#?}", event))
+        .await
+	.await // <- The second await will block until the connection is dropped
+	.unwrap();
 }
 ```
