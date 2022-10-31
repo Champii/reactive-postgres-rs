@@ -61,8 +61,6 @@ where
                         .unwrap();
                 }
             }
-
-            eprintln!("stream ended");
         });
 
         let ctx = Arc::clone(&self.ctx);
@@ -71,8 +69,6 @@ where
             while rx.recv().await.is_some() {
                 ctx.write().await.handle_event().await;
             }
-
-            eprintln!("channel closed");
         });
 
         self.ctx.write().await.start().await;
@@ -389,7 +385,7 @@ where
     watcher.start(connection).await
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Event<T> {
     Insert(T),
     Update(T),
