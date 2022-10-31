@@ -61,6 +61,8 @@ where
                         .unwrap();
                 }
             }
+
+            eprintln!("stream ended");
         });
 
         let ctx = Arc::clone(&self.ctx);
@@ -69,6 +71,8 @@ where
             while rx.recv().await.is_some() {
                 ctx.write().await.handle_event().await;
             }
+
+            eprintln!("channel closed");
         });
 
         self.ctx.write().await.start().await;
@@ -92,6 +96,9 @@ pub struct WatcherCtx<T> {
     #[new(default)]
     source_tables: Vec<String>,
 
+    #[new(value = "true")]
+    first_run: bool,
+
     phantom: std::marker::PhantomData<T>,
 }
 
@@ -105,26 +112,70 @@ where
             .await
             .unwrap();
 
-        self.setup_query_result_table().await;
-        self.get_query_result_columns().await;
+        self.init().await
+    }
+
+    pub async fn init(&mut self) {
         self.collect_source_tables();
         self.create_triggers().await;
+
+        // If no initial record, we can't infer the table schema. Skipping until the first event
+        if !self.setup_query_result_table().await {
+            return;
+        }
+
+        self.update_result_table().await;
+    }
+
+    pub async fn setup_query_result_table(&mut self) -> bool {
+        let tmp_table_name = "query_result";
+
+        let columns = self.get_query_result_columns().await;
+
+        if columns.is_empty() {
+            // Delay the setup until there is at least one record
+            return false;
+        }
+
+        let fields = columns.iter().map(|(name, _)| name.clone()).collect();
+
+        let columns_def = columns
+            .iter()
+            .map(|(name, t)| format!("{} {} NOT NULL", name, t))
+            .collect::<Vec<_>>()
+            .join(",\n");
+
+        let query = format!(
+            r#"
+            CREATE TEMP TABLE {} (
+                {}
+            )
+        "#,
+            tmp_table_name, columns_def,
+        );
+
+        self.client.execute(&query, &[]).await.unwrap();
+
+        self.result_table = TmpTable {
+            name: tmp_table_name.to_string(),
+            fields,
+        };
+
+        true
     }
 
     pub async fn get_query_result_columns(&self) -> Vec<(String, String)> {
-        let query = format!("SELECT * FROM ({}) AS tamere LIMIT 1", self.query);
+        let query = format!("SELECT * FROM ({}) q LIMIT 1", self.query);
 
-        let columns = self
-            .client
-            .query(&query, &[])
-            .await
-            .unwrap()
-            .get(0)
-            .unwrap()
-            .columns()
-            .iter()
-            .map(|c| (c.name().to_string(), c.type_().name().to_string()))
-            .collect();
+        let columns = if let Some(first) = self.client.query(&query, &[]).await.unwrap().get(0) {
+            first
+                .columns()
+                .iter()
+                .map(|c| (c.name().to_string(), c.type_().name().to_string()))
+                .collect()
+        } else {
+            vec![]
+        };
 
         columns
     }
@@ -161,36 +212,6 @@ where
         self.source_tables = names;
     }
 
-    pub async fn setup_query_result_table(&mut self) {
-        let tmp_table_name = "query_result";
-
-        let columns = self.get_query_result_columns().await;
-
-        let fields = columns.iter().map(|(name, _)| name.clone()).collect();
-
-        let columns_def = columns
-            .iter()
-            .map(|(name, t)| format!("{} {} NOT NULL", name, t))
-            .collect::<Vec<_>>()
-            .join(",\n");
-
-        let query = format!(
-            r#"
-			CREATE TEMP TABLE {} (
-                {}
-			)
-		"#,
-            tmp_table_name, columns_def,
-        );
-
-        self.client.execute(&query, &[]).await.unwrap();
-
-        self.result_table = TmpTable {
-            name: tmp_table_name.to_string(),
-            fields,
-        };
-    }
-
     pub async fn create_triggers(&mut self) {
         for (i, table_name) in self.source_tables.iter().enumerate() {
             if !self.triggers.contains(&table_name) {
@@ -199,11 +220,11 @@ where
 
                 let drop_sql = format!(
                     r#"
-					DROP TRIGGER IF EXISTS
-						{}
-					ON
-						{}
-				"#,
+                    DROP TRIGGER IF EXISTS
+                        {}
+                    ON
+                        {}
+                "#,
                     trigger_name, table_name
                 );
 
@@ -211,14 +232,14 @@ where
 
                 let func_sql = format!(
                     r#"
-					CREATE OR REPLACE FUNCTION pg_temp.{}()
-					RETURNS TRIGGER AS $$
-						BEGIN
-							EXECUTE pg_notify('__live_update', '{}');
-						RETURN NULL;
-						END;
-					$$ LANGUAGE plpgsql
-				"#,
+                    CREATE OR REPLACE FUNCTION pg_temp.{}()
+                    RETURNS TRIGGER AS $$
+                        BEGIN
+                            EXECUTE pg_notify('__live_update', '{}');
+                        RETURN NULL;
+                        END;
+                    $$ LANGUAGE plpgsql
+                "#,
                     trigger_name, l_key
                 );
 
@@ -226,12 +247,12 @@ where
 
                 let create_sql = format!(
                     "
-					CREATE TRIGGER
-						{}
-					AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON
-						{}
-					EXECUTE PROCEDURE pg_temp.{}()
-				",
+                    CREATE TRIGGER
+                        {}
+                    AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON
+                        {}
+                    EXECUTE PROCEDURE pg_temp.{}()
+                ",
                     trigger_name, table_name, trigger_name
                 );
 
@@ -256,40 +277,40 @@ where
         let cols = self.result_table.fields.join(", ");
         let update_sql = format!(
             "WITH
-				q AS (
-					SELECT
-						*,
-						ROW_NUMBER() OVER() AS lol
-					FROM
-						({}) t
-				),
-				i AS (
-					INSERT INTO {i_table} (
+                q AS (
+                    SELECT
+                        *,
+                        ROW_NUMBER() OVER() AS lol
+                    FROM
+                        ({}) t
+                ),
+                i AS (
+                    INSERT INTO {i_table} (
                         {cols}
-					)
-					SELECT
-{cols}
-					FROM
-						q
-					WHERE q.id NOT IN (
+                    )
+                    SELECT
+                        {cols}
+                    FROM
+                        q
+                    WHERE q.id NOT IN (
                         SELECT id FROM {i_table}
                     )
-					RETURNING
-{i_table}.*
-				)
-			SELECT
-				jsonb_build_object(
-					'id', i.id,
-					'op', 1,
-					'data', jsonb_build_object(
+                    RETURNING
+                        {i_table}.*
+                )
+            SELECT
+                jsonb_build_object(
+                    'id', i.id,
+                    'op', 1,
+                    'data', jsonb_build_object(
                         {q_obj}
                     )
-				) AS c
-			FROM
-				i JOIN
-				q ON
-					i.id = q.id
-		",
+                ) AS c
+            FROM
+                i JOIN
+                q ON
+                    i.id = q.id
+        ",
             self.query
         );
 
@@ -300,6 +321,13 @@ where
             .unwrap_or_else(|err| {
                 panic!("error {}", err);
             });
+
+        // Don't send the first result, as it will contains the whole query.
+        if self.first_run {
+            self.first_run = false;
+
+            return;
+        }
 
         let res = res
             .into_iter()
@@ -327,6 +355,15 @@ where
     }
 
     pub async fn handle_event(&mut self) {
+        // The table was previously empty, sending it all after setting up the triggers.
+        if self.result_table.fields.is_empty() {
+            self.first_run = false;
+
+            if !self.setup_query_result_table().await {
+                return;
+            }
+        }
+
         self.update_result_table().await;
     }
 }
@@ -338,9 +375,10 @@ pub async fn watch<T>(
 where
     T: Debug + Send + Sync + 'static + DeserializeOwned,
 {
-    let (client, connection) = tokio_postgres::connect("host=localhost user=postgres", NoTls)
-        .await
-        .unwrap();
+    let (client, connection) =
+        tokio_postgres::connect("host=localhost user=postgres dbname=tamere", NoTls)
+            .await
+            .unwrap();
 
     let mut watcher = Watcher::new(Arc::new(RwLock::new(WatcherCtx::new(
         handler,
