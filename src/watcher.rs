@@ -224,7 +224,10 @@ where
                     trigger_name, table_name
                 );
 
-                self.client.execute(&drop_sql, &[]).await.unwrap();
+                self.client
+                    .execute(&drop_sql, &[])
+                    .await
+                    .unwrap_or_default();
 
                 let func_sql = format!(
                     r#"
@@ -239,7 +242,10 @@ where
                     trigger_name, l_key
                 );
 
-                self.client.execute(&func_sql, &[]).await.unwrap();
+                self.client
+                    .execute(&func_sql, &[])
+                    .await
+                    .unwrap_or_default();
 
                 let create_sql = format!(
                     "
@@ -252,7 +258,10 @@ where
                     trigger_name, table_name, trigger_name
                 );
 
-                self.client.execute(&create_sql, &[]).await.unwrap();
+                self.client
+                    .execute(&create_sql, &[])
+                    .await
+                    .unwrap_or_default();
 
                 self.triggers.push(table_name.clone());
             }
