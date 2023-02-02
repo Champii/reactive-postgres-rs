@@ -309,6 +309,21 @@ where
                     RETURNING
                         {i_table}.*
                 ),
+				d AS (
+					DELETE FROM
+						{i_table}
+					WHERE
+						NOT EXISTS(
+							SELECT
+								1
+							FROM
+								q
+							WHERE
+								q.id = {i_table}.id
+						)
+					RETURNING
+						{i_table}.id
+				),
                 u AS (
 					UPDATE {i_table} SET
                         {set_cols}
@@ -342,6 +357,15 @@ where
 				u JOIN
 				q ON
 					u.id = q.id
+			UNION ALL
+			SELECT
+				jsonb_build_object(
+					'id', d.id,
+					'op', 3,
+                    'data', jsonb_build_object('id', d.id)
+				) AS c
+			FROM
+				d
         ",
             self.query
         );
@@ -374,13 +398,11 @@ where
 
         let events = json_events
             .into_iter()
-            .map(|event| {
-                let data = serde_json::from_value(event.data).unwrap();
-                match event.op {
-                    1 => Event::Insert(data),
-                    2 => Event::Update(data),
-                    _ => unimplemented!(),
-                }
+            .map(|event| match event.op {
+                1 => Event::Insert(serde_json::from_value(event.data).unwrap()),
+                2 => Event::Update(serde_json::from_value(event.data).unwrap()),
+                3 => Event::Delete(event.id),
+                _ => unimplemented!(),
             })
             .collect::<Vec<Event<T>>>();
 
