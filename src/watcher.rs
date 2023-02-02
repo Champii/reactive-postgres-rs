@@ -430,7 +430,7 @@ pub async fn watch<T>(
 where
     T: Debug + Send + Sync + 'static + DeserializeOwned,
 {
-    let db_url = std::env::var("DATABASE_URL").unwrap();
+    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
     let (client, connection) = tokio_postgres::connect(&db_url, NoTls).await.unwrap();
 

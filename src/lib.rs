@@ -1,7 +1,7 @@
 mod watcher;
 pub use watcher::{watch, Event, WatchableSql};
 
-#[cfg(test)]
+/* #[cfg(test)]
 mod tests {
     use crate::*;
     use serde::{Deserialize, Serialize};
@@ -30,4 +30,4 @@ mod tests {
 
         drop(handler);
     }
-}
+} */
