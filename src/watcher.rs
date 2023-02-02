@@ -1,3 +1,4 @@
+/// Adapted from https://github.com/nothingisdead/pg-live-query/blob/master/watcher.js
 use async_trait::async_trait;
 use derive_new::new;
 use futures::StreamExt;
@@ -270,7 +271,21 @@ where
             .collect::<Vec<_>>()
             .join(",");
 
+        let u_obj = self
+            .result_table
+            .fields
+            .iter()
+            .map(|name| format!("'{name}', u.{name}"))
+            .collect::<Vec<_>>()
+            .join(",");
         let cols = self.result_table.fields.join(", ");
+        let set_cols = self
+            .result_table
+            .fields
+            .iter()
+            .map(|name| format!("{} = q.{}", name, name))
+            .collect::<Vec<_>>()
+            .join(", ");
         let update_sql = format!(
             "WITH
                 q AS (
@@ -293,7 +308,17 @@ where
                     )
                     RETURNING
                         {i_table}.*
-                )
+                ),
+                u AS (
+					UPDATE {i_table} SET
+                        {set_cols}
+					FROM
+						q
+					WHERE
+						{i_table}.id = q.id
+					RETURNING
+						{i_table}.*
+				)
             SELECT
                 jsonb_build_object(
                     'id', i.id,
@@ -306,6 +331,17 @@ where
                 i JOIN
                 q ON
                     i.id = q.id
+            UNION ALL
+			SELECT
+				jsonb_build_object(
+					'id', u.id,
+					'op', 2,
+					'data', jsonb_build_object({u_obj})
+				) AS c
+			FROM
+				u JOIN
+				q ON
+					u.id = q.id
         ",
             self.query
         );
@@ -342,6 +378,7 @@ where
                 let data = serde_json::from_value(event.data).unwrap();
                 match event.op {
                     1 => Event::Insert(data),
+                    2 => Event::Update(data),
                     _ => unimplemented!(),
                 }
             })
@@ -371,10 +408,9 @@ pub async fn watch<T>(
 where
     T: Debug + Send + Sync + 'static + DeserializeOwned,
 {
-    let (client, connection) =
-        tokio_postgres::connect("host=localhost user=postgres dbname=tamere", NoTls)
-            .await
-            .unwrap();
+    let db_url = std::env::var("DATABASE_URL").unwrap();
+
+    let (client, connection) = tokio_postgres::connect(&db_url, NoTls).await.unwrap();
 
     let mut watcher = Watcher::new(Arc::new(RwLock::new(WatcherCtx::new(
         handler,
