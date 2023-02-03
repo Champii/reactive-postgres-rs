@@ -6,7 +6,6 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{fmt::Debug, sync::Arc};
 use tokio::{sync::RwLock, task::JoinHandle};
 
-use postgres_query::FromSqlRow;
 use tokio_postgres::{
     tls::NoTlsStream, types::Json, AsyncMessage, Client, Connection, NoTls, Socket,
 };
@@ -22,7 +21,7 @@ pub struct Watcher<T> {
     ctx: Arc<RwLock<WatcherCtx<T>>>,
 }
 
-#[derive(Serialize, Deserialize, Debug, FromSqlRow)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct JsonEvent {
     pub id: i32,
     pub op: i32,
